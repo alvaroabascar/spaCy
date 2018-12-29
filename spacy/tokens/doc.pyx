@@ -1003,39 +1003,7 @@ cdef int set_children_from_heads(TokenC* tokens, int length) except -1:
             tokens[tokens[i].l_edge].sent_start = True
 
 
-cdef int _get_tokens_lca(Token token_j, Token token_k):
-    """Given two tokens, returns the index of the lowest common ancestor
-    (LCA) among the two. If they have no common ancestor, -1 is returned.
-
-    token_j (Token): a token.
-    token_k (Token): another token.
-    RETURNS (int): index of lowest common ancestor, or -1 if the tokens
-        have no common ancestor.
-    """
-    if token_j == token_k:
-        return token_j.i
-    elif token_j.head == token_k:
-        return token_k.i
-    elif token_k.head == token_j:
-        return token_j.i
-
-    token_j_ancestors = set(token_j.ancestors)
-
-    if token_k in token_j_ancestors:
-        return token_k.i
-
-    for token_k_ancestor in token_k.ancestors:
-
-        if token_k_ancestor == token_j:
-            return token_j.i
-
-        if token_k_ancestor in token_j_ancestors:
-            return token_k_ancestor.i
-
-    return -1
-
-
-cdef int [:,:] _get_lca_matrix(Doc doc, int start, int end):
+cdef int[:, :] _get_lca_matrix(Doc doc, int start, int end):
     """Given a doc and a start and end position defining a set of contiguous
     tokens within it, returns a matrix of Lowest Common Ancestors (LCA), where
     LCA[i, j] is the index of the lowest common ancestor among token i and j.
@@ -1046,19 +1014,62 @@ cdef int [:,:] _get_lca_matrix(Doc doc, int start, int end):
     RETURNS (np.array[ndim=2, dtype=numpy.int32]): LCA matrix with shape
         (n, n), where n = len(doc).
     """
-    cdef int [:,:] lca_matrix
+    cdef int[:, :] lca_matrix
+    # We keep a mapping between each token and a set of its ancestors,
+    # to avoid recreating the set each time.
+    cdef dict token_ancestors = {}
 
-    n_tokens= end - start
-    lca_matrix = numpy.empty((n_tokens, n_tokens), dtype=numpy.int32)
+    n_tokens = end - start
+    lca = numpy.empty((n_tokens, n_tokens), dtype=numpy.int32)
+    lca.fill(-1)
+    lca_matrix = lca
 
     for j in range(n_tokens):
         token_j = doc[j]
-        # the common ancestor of token and itself is itself:
+        # the lca of a token and itself is itself:
         lca_matrix[j, j] = j
+
         for k in range(j + 1, n_tokens):
-            lca_matrix[j, k] = _get_tokens_lca(token_j, doc[k])
-            # matrix is symmetric:
-            lca_matrix[k, j] = lca_matrix[j, k]
+            token_k = doc[k]
+
+            # 1. Check whether one token is head of the other
+            if token_j.head.i == k:
+                lca_matrix[j, k] = k
+                lca_matrix[k, j] = k
+                continue
+
+            if token_k.head.i == j:
+                lca_matrix[j, k] = j
+                lca_matrix[k, j] = j
+                continue
+
+            # Try to retrieve ancestors of j from the dictionary.
+            # If not available, compute and store them.
+            if token_j.i in token_ancestors:
+                token_j_ancestors = token_ancestors[token_j.i]
+            else:
+                token_j_ancestors = set(token_j.ancestors)
+                token_ancestors[token_j.i] = token_j_ancestors
+
+            # 2. Check whether k is parent of j
+            if token_k in token_j_ancestors:
+                lca_matrix[j, k] = k
+                lca_matrix[k, j] = k
+                continue
+
+            # 3. Check whether j is parent of k, and orderly whether
+            # any ancestor of j is also ancestor of k.
+            for token_k_ancestor in token_k.ancestors:
+
+                if token_k_ancestor.i == j:
+                    lca_matrix[j, k] = j
+                    lca_matrix[k, j] = j
+                    break
+
+                if token_k_ancestor in token_j_ancestors:
+                    lca_matrix[j, k] = token_k_ancestor.i
+                    lca_matrix[k, j] = lca_matrix[j, k]
+                    break
 
     return lca_matrix
 
